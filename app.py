@@ -5,6 +5,7 @@ import hashlib
 import os
 import json
 from datetime import datetime
+from streamlit_cookies_controller import CookieController
 
 # ── Configuración de página ──────────────────────────────────────────────────
 st.set_page_config(
@@ -261,48 +262,18 @@ def eliminar_token(token: str):
     conn.commit()
     conn.close()
 
-# JS para leer/escribir el token en localStorage del navegador
-def js_get_token() -> str:
-    """Inyecta JS que escribe el token de localStorage en un query param para que Python lo lea."""
-    token = st.query_params.get("_tok", "")
-    return token
+# ── Cookie controller (se instancia una vez al inicio) ───────────────────────
+_cookie_ctrl = CookieController()
+COOKIE_NAME  = "plr_session"
 
-def js_set_token(token: str):
-    """Inyecta JS para guardar el token en localStorage y actualizar query params."""
-    st.markdown(f"""
-    <script>
-        localStorage.setItem('plr_token', '{token}');
-        const url = new URL(window.location.href);
-        url.searchParams.set('_tok', '{token}');
-        window.history.replaceState(null, '', url.toString());
-    </script>
-    """, unsafe_allow_html=True)
+def cookie_set(token: str):
+    _cookie_ctrl.set(COOKIE_NAME, token, max_age=30*24*3600)   # 30 días
 
-def js_clear_token():
-    st.markdown("""
-    <script>
-        localStorage.removeItem('plr_token');
-        const url = new URL(window.location.href);
-        url.searchParams.delete('_tok');
-        window.history.replaceState(null, '', url.toString());
-    </script>
-    """, unsafe_allow_html=True)
+def cookie_get() -> str:
+    return _cookie_ctrl.get(COOKIE_NAME) or ""
 
-def js_restore_token():
-    """Al cargar la página, si hay token en localStorage lo pone en query param y recarga."""
-    st.markdown("""
-    <script>
-        (function() {
-            const saved = localStorage.getItem('plr_token');
-            const url = new URL(window.location.href);
-            const current = url.searchParams.get('_tok');
-            if (saved && saved !== current) {
-                url.searchParams.set('_tok', saved);
-                window.location.replace(url.toString());
-            }
-        })();
-    </script>
-    """, unsafe_allow_html=True)
+def cookie_remove():
+    _cookie_ctrl.remove(COOKIE_NAME)
 
 
 # ── Helpers de ramos y notas ─────────────────────────────────────────────────
@@ -354,7 +325,6 @@ def guardar_notas(ramo_id, notas_list):
 
 
 # ── Estado de sesión ─────────────────────────────────────────────────────────
-# Intentar restaurar sesión desde localStorage (via query param)
 if "usuario" not in st.session_state:
     st.session_state.usuario = None
     st.session_state._session_token = ""
@@ -364,20 +334,16 @@ if "auth_tab" not in st.session_state:
 if "ramo_editando" not in st.session_state:
     st.session_state.ramo_editando = None
 
-# Si no hay usuario en memoria, buscar token guardado en el navegador
+# Restaurar sesión desde cookie (ocurre en Python, no en JS → siempre a tiempo)
 if st.session_state.usuario is None:
-    token_url = st.query_params.get("_tok", "")
-    if token_url:
-        user_from_token = get_usuario_por_token(token_url)
-        if user_from_token:
-            st.session_state.usuario = user_from_token
-            st.session_state._session_token = token_url
+    saved_token = cookie_get()
+    if saved_token:
+        user_from_cookie = get_usuario_por_token(saved_token)
+        if user_from_cookie:
+            st.session_state.usuario = user_from_cookie
+            st.session_state._session_token = saved_token
         else:
-            # Token inválido, limpiar
-            st.query_params.pop("_tok", None)
-    else:
-        # Inyectar JS para restaurar desde localStorage si existe
-        js_restore_token()
+            cookie_remove()   # cookie inválida o expirada
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -393,9 +359,11 @@ if st.session_state.usuario is None:
     with tab_login:
         st.markdown("")
         with st.form("form_login"):
-            email_l = st.text_input("Correo electrónico", placeholder="tu@correo.com")
-            pass_l  = st.text_input("Contraseña", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("Entrar →", use_container_width=True)
+            email_l    = st.text_input("Correo electrónico", placeholder="tu@correo.com")
+            pass_l     = st.text_input("Contraseña", type="password", placeholder="••••••••")
+            recordar   = st.checkbox("💾 Recordar este dispositivo", value=True,
+                                     help="Mantiene tu sesión activa por 30 días en este navegador")
+            submitted  = st.form_submit_button("Entrar →", use_container_width=True)
 
         if submitted:
             if not email_l or not pass_l:
@@ -406,8 +374,8 @@ if st.session_state.usuario is None:
                     token = crear_token(user["id"])
                     st.session_state.usuario = user
                     st.session_state._session_token = token
-                    st.query_params["_tok"] = token
-                    js_set_token(token)
+                    if recordar:
+                        cookie_set(token)
                     st.rerun()
                 else:
                     st.error("Correo o contraseña incorrectos.")
@@ -459,8 +427,7 @@ with col_user:
         st.session_state.usuario = None
         st.session_state._session_token = ""
         st.session_state.ramo_editando = None
-        st.query_params.pop("_tok", None)
-        js_clear_token()
+        cookie_remove()
         st.rerun()
 
 # ── Tabs principales ─────────────────────────────────────────────────────────
