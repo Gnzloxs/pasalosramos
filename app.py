@@ -323,27 +323,174 @@ def guardar_notas(ramo_id, notas_list):
     conn.commit()
     conn.close()
 
+# ── Acceso maestro (admin) ───────────────────────────────────────────────────
+ADMIN_USER = "admin"
+ADMIN_PASS = "plr_admin_2025"   # ← cámbiala por la tuya
+
+def get_todos_usuarios():
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT u.id, u.nombre, u.email, u.carrera, u.created_at,
+               COUNT(DISTINCT r.id) AS n_ramos,
+               COUNT(DISTINCT n.id) AS n_notas
+        FROM usuarios u
+        LEFT JOIN ramos r ON r.usuario_id = u.id
+        LEFT JOIN notas n ON n.ramo_id = r.id
+        GROUP BY u.id
+        ORDER BY u.created_at DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_detalle_usuario(uid):
+    conn = get_conn()
+    ramos = conn.execute(
+        "SELECT * FROM ramos WHERE usuario_id = ? ORDER BY semestre, nombre", (uid,)
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in ramos:
+        notas = get_notas(r["id"])
+        prom  = round(sum(n["nota"]*n["ponderacion"]/100 for n in notas), 2) if notas else None
+        result.append({"ramo": dict(r), "notas": notas, "promedio": prom})
+    return result
+
+def eliminar_usuario_admin(uid):
+    conn = get_conn()
+    ramos = conn.execute("SELECT id FROM ramos WHERE usuario_id = ?", (uid,)).fetchall()
+    for r in ramos:
+        conn.execute("DELETE FROM notas WHERE ramo_id = ?", (r["id"],))
+    conn.execute("DELETE FROM ramos WHERE usuario_id = ?", (uid,))
+    conn.execute("DELETE FROM sesiones WHERE usuario_id = ?", (uid,))
+    conn.execute("DELETE FROM usuarios WHERE id = ?", (uid,))
+    conn.commit()
+    conn.close()
+
 
 # ── Estado de sesión ─────────────────────────────────────────────────────────
 if "usuario" not in st.session_state:
     st.session_state.usuario = None
     st.session_state._session_token = ""
-
 if "auth_tab" not in st.session_state:
     st.session_state.auth_tab = "login"
 if "ramo_editando" not in st.session_state:
     st.session_state.ramo_editando = None
+if "_cookie_checked" not in st.session_state:
+    st.session_state._cookie_checked = False
 
-# Restaurar sesión desde cookie (ocurre en Python, no en JS → siempre a tiempo)
+# ── Restaurar sesión desde cookie ────────────────────────────────────────────
+# streamlit-cookies-controller necesita un ciclo de render antes de poder leer
+# la cookie. Usamos _cookie_checked para forzar ese rerun solo una vez.
 if st.session_state.usuario is None:
-    saved_token = cookie_get()
-    if saved_token:
-        user_from_cookie = get_usuario_por_token(saved_token)
-        if user_from_cookie:
-            st.session_state.usuario = user_from_cookie
-            st.session_state._session_token = saved_token
-        else:
-            cookie_remove()   # cookie inválida o expirada
+    if not st.session_state._cookie_checked:
+        # Primer run: marcar como checkeado y relanzar para que el componente
+        # de cookies ya esté montado y pueda devolver el valor real.
+        st.session_state._cookie_checked = True
+        st.rerun()
+    else:
+        # Segundo run: ahora sí se puede leer la cookie
+        saved_token = cookie_get()
+        if saved_token:
+            user_from_cookie = get_usuario_por_token(saved_token)
+            if user_from_cookie:
+                st.session_state.usuario = user_from_cookie
+                st.session_state._session_token = saved_token
+            else:
+                cookie_remove()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ACCESO MAESTRO — Panel de administración
+# ════════════════════════════════════════════════════════════════════════════
+if "admin_logged" not in st.session_state:
+    st.session_state.admin_logged = False
+
+# Detectar ?admin=1 en la URL para mostrar el login maestro
+if st.query_params.get("admin") == "1" or st.session_state.admin_logged:
+
+    if not st.session_state.admin_logged:
+        st.markdown('<div class="titulo-app">🔐 Acceso Maestro</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subtitulo-app">Panel de administración — Pasa los Ramos</div>', unsafe_allow_html=True)
+        st.divider()
+        with st.form("form_admin"):
+            adm_u = st.text_input("Usuario admin", placeholder="admin")
+            adm_p = st.text_input("Contraseña", type="password", placeholder="••••••••")
+            ok_adm = st.form_submit_button("Entrar al panel →", use_container_width=True)
+        if ok_adm:
+            if adm_u == ADMIN_USER and adm_p == ADMIN_PASS:
+                st.session_state.admin_logged = True
+                st.rerun()
+            else:
+                st.error("Credenciales incorrectas.")
+        st.stop()
+
+    # ── Panel admin ──────────────────────────────────────────────────────────
+    st.markdown('<div class="titulo-app">🛡️ Panel Maestro</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitulo-app">Administración de usuarios — Pasa los Ramos</div>', unsafe_allow_html=True)
+
+    col_adm1, col_adm2 = st.columns([5, 1])
+    with col_adm2:
+        if st.button("🚪 Salir", use_container_width=True):
+            st.session_state.admin_logged = False
+            st.query_params.clear()
+            st.rerun()
+
+    usuarios = get_todos_usuarios()
+    st.divider()
+
+    # Métricas rápidas
+    m1, m2, m3 = st.columns(3)
+    m1.metric("👥 Usuarios registrados", len(usuarios))
+    m2.metric("📚 Ramos en total", sum(u["n_ramos"] for u in usuarios))
+    m3.metric("📝 Notas en total", sum(u["n_notas"] for u in usuarios))
+
+    st.divider()
+    st.subheader("👥 Usuarios registrados")
+
+    buscar_adm = st.text_input("🔍 Buscar por nombre, correo o carrera", placeholder="ej: Gonzalo", key="adm_buscar")
+    usuarios_fil = usuarios
+    if buscar_adm.strip():
+        q = buscar_adm.lower()
+        usuarios_fil = [u for u in usuarios if q in u["nombre"].lower() or q in u["email"].lower() or q in (u["carrera"] or "").lower()]
+
+    if not usuarios_fil:
+        st.info("No hay usuarios que coincidan.")
+    else:
+        for u in usuarios_fil:
+            with st.expander(f"👤 {u['nombre']}  —  {u['email']}  |  {u['n_ramos']} ramos · {u['n_notas']} notas  |  📅 {u['created_at'][:10]}"):
+                col_u1, col_u2, col_u3 = st.columns(3)
+                col_u1.markdown(f"**Carrera:** {u['carrera'] or '—'}")
+                col_u2.markdown(f"**Registrado:** {u['created_at'][:10]}")
+                col_u3.markdown(f"**ID:** {u['id']}")
+
+                detalle = get_detalle_usuario(u["id"])
+                if detalle:
+                    for item in detalle:
+                        r = item["ramo"]
+                        prom = item["promedio"]
+                        color_p = "#34d399" if prom and prom >= 4.0 else ("#fbbf24" if prom and prom >= 3.1 else "#f87171")
+                        prom_str = f'<span style="color:{color_p};font-weight:700">{prom:.1f}</span>' if prom else "—"
+                        st.markdown(
+                            f'<div class="historial-card" style="margin-bottom:.4rem">'
+                            f'<b>📖 {r["nombre"]}</b> &nbsp;<span class="semestre-badge">{r["semestre"]}</span>'
+                            f'&nbsp;&nbsp; Promedio: {prom_str} &nbsp;·&nbsp; {len(item["notas"])} evaluación(es)'
+                            f'</div>', unsafe_allow_html=True
+                        )
+                        if item["notas"]:
+                            df_adm = pd.DataFrame(item["notas"])[["descripcion","nota","ponderacion"]]
+                            df_adm.columns = ["Descripción","Nota","Pond. (%)"]
+                            st.dataframe(df_adm, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Este usuario aún no tiene ramos guardados.")
+
+                st.divider()
+                if st.button(f"🗑️ Eliminar usuario {u['nombre']}", key=f"adm_del_{u['id']}",
+                             help="Elimina el usuario y todos sus datos permanentemente"):
+                    eliminar_usuario_admin(u["id"])
+                    st.success(f"Usuario {u['nombre']} eliminado.")
+                    st.rerun()
+
+    st.stop()
 
 
 # ════════════════════════════════════════════════════════════════════════════
