@@ -439,26 +439,7 @@ if st.session_state.usuario is None:
 if "admin_logged" not in st.session_state:
     st.session_state.admin_logged = False
 
-# Detectar ?admin=1 en la URL para mostrar el login maestro
-if st.query_params.get("admin") == "1" or st.session_state.admin_logged:
-
-    if not st.session_state.admin_logged:
-        st.markdown('<div class="titulo-app">🔐 Acceso Maestro</div>', unsafe_allow_html=True)
-        st.markdown('<div class="subtitulo-app">Panel de administración — Pasa los Ramos</div>', unsafe_allow_html=True)
-        st.divider()
-        with st.form("form_admin"):
-            adm_u = st.text_input("Usuario admin", placeholder="admin")
-            adm_p = st.text_input("Contraseña", type="password", placeholder="••••••••")
-            ok_adm = st.form_submit_button("Entrar al panel →", use_container_width=True)
-        if ok_adm:
-            if adm_u == ADMIN_USER and adm_p == ADMIN_PASS:
-                st.session_state.admin_logged = True
-                st.rerun()
-            else:
-                st.error("Credenciales incorrectas.")
-        st.stop()
-
-    # ── Panel admin ──────────────────────────────────────────────────────────
+if st.session_state.admin_logged:
     st.markdown('<div class="titulo-app">🛡️ Panel Maestro</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitulo-app">Administración de usuarios — Pasa los Ramos</div>', unsafe_allow_html=True)
 
@@ -534,7 +515,7 @@ if st.session_state.usuario is None:
     st.markdown('<div class="titulo-app">🎓 Pasa los Ramos</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitulo-app">Tu calculadora de notas universitaria</div>', unsafe_allow_html=True)
 
-    tab_login, tab_reg = st.tabs(["🔑 Iniciar Sesión", "📝 Registrarse"])
+    tab_login, tab_reg, tab_admin = st.tabs(["🔑 Iniciar Sesión", "📝 Registrarse", "🛡️ Admin"])
 
     # ── Login ────────────────────────────────────────────────────────────────
     with tab_login:
@@ -586,6 +567,21 @@ if st.session_state.usuario is None:
                     st.success(msg + " Ahora inicia sesión.")
                 else:
                     st.error(msg)
+
+    # ── Admin ─────────────────────────────────────────────────────────────────
+    with tab_admin:
+        st.markdown("")
+        st.markdown("#### 🔐 Acceso maestro")
+        with st.form("form_admin_login"):
+            adm_u = st.text_input("Usuario", placeholder="admin")
+            adm_p = st.text_input("Contraseña", type="password", placeholder="••••••••")
+            ok_adm = st.form_submit_button("Entrar al panel →", use_container_width=True)
+        if ok_adm:
+            if adm_u == ADMIN_USER and adm_p == ADMIN_PASS:
+                st.session_state.admin_logged = True
+                st.rerun()
+            else:
+                st.error("Credenciales incorrectas.")
 
     st.stop()
 
