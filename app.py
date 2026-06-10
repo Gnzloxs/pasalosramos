@@ -3,11 +3,12 @@ import pandas as pd
 import sqlite3
 import hashlib
 import os
+import json
 from datetime import datetime
 
 # ── Configuración de página ──────────────────────────────────────────────────
 st.set_page_config(
-    page_title="PasaLosRamos 🎓",
+    page_title="Pasa los Ramos 🎓",
     page_icon="🎓",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -194,6 +195,14 @@ def init_db():
             FOREIGN KEY (ramo_id) REFERENCES ramos(id)
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sesiones (
+            token TEXT PRIMARY KEY,
+            usuario_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -226,6 +235,74 @@ def login_usuario(email, password):
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+def crear_token(usuario_id: int) -> str:
+    token = hashlib.sha256(os.urandom(32)).hexdigest()
+    conn = get_conn()
+    conn.execute("INSERT INTO sesiones (token, usuario_id) VALUES (?, ?)", (token, usuario_id))
+    conn.commit()
+    conn.close()
+    return token
+
+def get_usuario_por_token(token: str):
+    if not token:
+        return None
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT u.* FROM usuarios u JOIN sesiones s ON u.id = s.usuario_id WHERE s.token = ?",
+        (token,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def eliminar_token(token: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM sesiones WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+# JS para leer/escribir el token en localStorage del navegador
+def js_get_token() -> str:
+    """Inyecta JS que escribe el token de localStorage en un query param para que Python lo lea."""
+    token = st.query_params.get("_tok", "")
+    return token
+
+def js_set_token(token: str):
+    """Inyecta JS para guardar el token en localStorage y actualizar query params."""
+    st.markdown(f"""
+    <script>
+        localStorage.setItem('plr_token', '{token}');
+        const url = new URL(window.location.href);
+        url.searchParams.set('_tok', '{token}');
+        window.history.replaceState(null, '', url.toString());
+    </script>
+    """, unsafe_allow_html=True)
+
+def js_clear_token():
+    st.markdown("""
+    <script>
+        localStorage.removeItem('plr_token');
+        const url = new URL(window.location.href);
+        url.searchParams.delete('_tok');
+        window.history.replaceState(null, '', url.toString());
+    </script>
+    """, unsafe_allow_html=True)
+
+def js_restore_token():
+    """Al cargar la página, si hay token en localStorage lo pone en query param y recarga."""
+    st.markdown("""
+    <script>
+        (function() {
+            const saved = localStorage.getItem('plr_token');
+            const url = new URL(window.location.href);
+            const current = url.searchParams.get('_tok');
+            if (saved && saved !== current) {
+                url.searchParams.set('_tok', saved);
+                window.location.replace(url.toString());
+            }
+        })();
+    </script>
+    """, unsafe_allow_html=True)
 
 
 # ── Helpers de ramos y notas ─────────────────────────────────────────────────
@@ -277,19 +354,37 @@ def guardar_notas(ramo_id, notas_list):
 
 
 # ── Estado de sesión ─────────────────────────────────────────────────────────
+# Intentar restaurar sesión desde localStorage (via query param)
 if "usuario" not in st.session_state:
     st.session_state.usuario = None
+    st.session_state._session_token = ""
+
 if "auth_tab" not in st.session_state:
     st.session_state.auth_tab = "login"
 if "ramo_editando" not in st.session_state:
     st.session_state.ramo_editando = None
+
+# Si no hay usuario en memoria, buscar token guardado en el navegador
+if st.session_state.usuario is None:
+    token_url = st.query_params.get("_tok", "")
+    if token_url:
+        user_from_token = get_usuario_por_token(token_url)
+        if user_from_token:
+            st.session_state.usuario = user_from_token
+            st.session_state._session_token = token_url
+        else:
+            # Token inválido, limpiar
+            st.query_params.pop("_tok", None)
+    else:
+        # Inyectar JS para restaurar desde localStorage si existe
+        js_restore_token()
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # PANTALLA DE AUTH (no logueado)
 # ════════════════════════════════════════════════════════════════════════════
 if st.session_state.usuario is None:
-    st.markdown('<div class="titulo-app">🎓 PasaLosRamos</div>', unsafe_allow_html=True)
+    st.markdown('<div class="titulo-app">🎓 Pasa los Ramos</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitulo-app">Tu calculadora de notas universitaria</div>', unsafe_allow_html=True)
 
     tab_login, tab_reg = st.tabs(["🔑 Iniciar Sesión", "📝 Registrarse"])
@@ -308,7 +403,11 @@ if st.session_state.usuario is None:
             else:
                 user = login_usuario(email_l, pass_l)
                 if user:
+                    token = crear_token(user["id"])
                     st.session_state.usuario = user
+                    st.session_state._session_token = token
+                    st.query_params["_tok"] = token
+                    js_set_token(token)
                     st.rerun()
                 else:
                     st.error("Correo o contraseña incorrectos.")
@@ -349,13 +448,19 @@ user = st.session_state.usuario
 # Header con usuario
 col_titulo, col_user = st.columns([3, 1])
 with col_titulo:
-    st.markdown('<div class="titulo-app">🎓 PasaLosRamos</div>', unsafe_allow_html=True)
+    st.markdown('<div class="titulo-app">🎓 Pasa los Ramos</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitulo-app">Calculadora de notas con ponderación</div>', unsafe_allow_html=True)
 with col_user:
     st.markdown(f'<div style="padding-top:1rem"><div class="user-badge">👤 {user["nombre"].split()[0]}</div></div>', unsafe_allow_html=True)
     if st.button("Salir", key="logout_btn"):
+        token = st.session_state.get("_session_token", "")
+        if token:
+            eliminar_token(token)
         st.session_state.usuario = None
+        st.session_state._session_token = ""
         st.session_state.ramo_editando = None
+        st.query_params.pop("_tok", None)
+        js_clear_token()
         st.rerun()
 
 # ── Tabs principales ─────────────────────────────────────────────────────────
@@ -453,6 +558,7 @@ with tab1:
         if items_validos:
             promedio = round(suma_weighted, 1)
             st.session_state["promedio_semestral"] = promedio
+            st.session_state["items_validos_t1"] = items_validos
 
             if promedio >= esc_apro:
                 estado = "aprobado"; emoji = "🎉 APROBADO"; color = "#34d399"
@@ -569,6 +675,49 @@ with tab2:
                 st.success(f"Con nota {nota_sim:.1f} en el examen → **Nota final: {final:.2f}** ✅ Aprobado")
             else:
                 st.error(f"Con nota {nota_sim:.1f} en el examen → **Nota final: {final:.2f}** ❌ Reprobado")
+
+    # ── Guardar promedio en historial ────────────────────────────────────────
+    if promedio_tab2 is not None:
+        st.divider()
+        st.subheader("💾 Guardar en historial")
+        ramos_t2 = get_ramos(user["id"])
+        col_t2a, col_t2b = st.columns(2)
+        with col_t2a:
+            modo_t2 = st.radio("Ramo", ["Seleccionar existente", "Crear nuevo"], horizontal=True, key="modo_ramo_t2")
+        if modo_t2 == "Crear nuevo" or not ramos_t2:
+            with col_t2b:
+                sem_t2 = st.text_input("Semestre", placeholder="ej: 2025-1", key="sem_t2")
+            nombre_t2 = st.text_input("Nombre del ramo", placeholder="ej: Física I", key="nombre_ramo_t2")
+            if st.button("💾 Guardar promedio", use_container_width=True, key="guardar_t2_nuevo"):
+                items_t2 = st.session_state.get("items_validos_t1", [])
+                if not nombre_t2.strip() or not sem_t2.strip():
+                    st.error("Ingresa nombre del ramo y semestre.")
+                elif not items_t2:
+                    st.warning("Primero ingresa tus notas en **🧮 Mis Notas** y llega al 100%.")
+                else:
+                    crear_ramo(user["id"], nombre_t2, sem_t2)
+                    ramos_act_t2 = get_ramos(user["id"])
+                    ramo_nuevo_t2 = [r for r in ramos_act_t2 if r["nombre"] == nombre_t2.strip()]
+                    if ramo_nuevo_t2:
+                        guardar_notas(ramo_nuevo_t2[-1]["id"], items_t2)
+                        st.success(f"✅ Guardado en **{nombre_t2}** (Semestre {sem_t2})")
+        else:
+            semestres_t2 = sorted(set(r["semestre"] for r in ramos_t2))
+            with col_t2b:
+                sem_fil_t2 = st.selectbox("Filtrar semestre", ["Todos"] + semestres_t2, key="sem_fil_t2")
+            ramos_fil_t2 = ramos_t2 if sem_fil_t2 == "Todos" else [r for r in ramos_t2 if r["semestre"] == sem_fil_t2]
+            opts_t2 = {f"{r['nombre']} [{r['semestre']}]": r["id"] for r in ramos_fil_t2}
+            if opts_t2:
+                ramo_sel_t2 = st.selectbox("Ramo", list(opts_t2.keys()), key="ramo_sel_t2")
+                if st.button("💾 Guardar / actualizar notas", use_container_width=True, key="guardar_t2_exist"):
+                    items_t2 = st.session_state.get("items_validos_t1", [])
+                    if not items_t2:
+                        st.warning("Primero ingresa tus notas en **🧮 Mis Notas** y llega al 100%.")
+                    else:
+                        guardar_notas(opts_t2[ramo_sel_t2], items_t2)
+                        st.success(f"✅ Notas actualizadas en **{ramo_sel_t2}**")
+            else:
+                st.info("No hay ramos en ese semestre. Crea uno nuevo.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -897,5 +1046,41 @@ with tab5:
             st.success(f"✅ **Aprobado** con nota final **{nota_final:.2f}**")
         else:
             st.error(f"❌ **Reprobado** con nota final **{nota_final:.2f}**")
+
+        # ── Guardar en historial ───────────────────────────────────────────
+        st.divider()
+        st.subheader("💾 Guardar en historial")
+        items_libre_guardar = [{"descripcion": it["Descripción"], "nota": it["Nota"], "ponderacion": it["Ponderación (%)"]} for it in libre_items]
+        ramos_t5 = get_ramos(user["id"])
+        col_t5a, col_t5b = st.columns(2)
+        with col_t5a:
+            modo_t5 = st.radio("Ramo", ["Seleccionar existente", "Crear nuevo"], horizontal=True, key="modo_ramo_t5")
+        if modo_t5 == "Crear nuevo" or not ramos_t5:
+            with col_t5b:
+                sem_t5 = st.text_input("Semestre", placeholder="ej: 2025-1", key="sem_t5")
+            nombre_t5 = st.text_input("Nombre del ramo", placeholder="ej: Estadística", key="nombre_ramo_t5")
+            if st.button("💾 Guardar notas", use_container_width=True, key="guardar_t5_nuevo"):
+                if not nombre_t5.strip() or not sem_t5.strip():
+                    st.error("Ingresa nombre del ramo y semestre.")
+                else:
+                    crear_ramo(user["id"], nombre_t5, sem_t5)
+                    ramos_act_t5 = get_ramos(user["id"])
+                    ramo_nuevo_t5 = [r for r in ramos_act_t5 if r["nombre"] == nombre_t5.strip()]
+                    if ramo_nuevo_t5:
+                        guardar_notas(ramo_nuevo_t5[-1]["id"], items_libre_guardar)
+                        st.success(f"✅ Guardado en **{nombre_t5}** (Semestre {sem_t5})")
+        else:
+            semestres_t5 = sorted(set(r["semestre"] for r in ramos_t5))
+            with col_t5b:
+                sem_fil_t5 = st.selectbox("Filtrar semestre", ["Todos"] + semestres_t5, key="sem_fil_t5")
+            ramos_fil_t5 = ramos_t5 if sem_fil_t5 == "Todos" else [r for r in ramos_t5 if r["semestre"] == sem_fil_t5]
+            opts_t5 = {f"{r['nombre']} [{r['semestre']}]": r["id"] for r in ramos_fil_t5}
+            if opts_t5:
+                ramo_sel_t5 = st.selectbox("Ramo", list(opts_t5.keys()), key="ramo_sel_t5")
+                if st.button("💾 Guardar / actualizar notas", use_container_width=True, key="guardar_t5_exist"):
+                    guardar_notas(opts_t5[ramo_sel_t5], items_libre_guardar)
+                    st.success(f"✅ Notas actualizadas en **{ramo_sel_t5}**")
+            else:
+                st.info("No hay ramos en ese semestre. Crea uno nuevo.")
     else:
         st.info("Ingresa al menos una nota con su ponderación para ver el resultado.")
