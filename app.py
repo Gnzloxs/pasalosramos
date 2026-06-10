@@ -5,7 +5,6 @@ import hashlib
 import os
 import json
 from datetime import datetime
-from streamlit_cookies_controller import CookieController
 
 # ── Configuración de página ──────────────────────────────────────────────────
 st.set_page_config(
@@ -262,18 +261,57 @@ def eliminar_token(token: str):
     conn.commit()
     conn.close()
 
-# ── Cookie controller (se instancia una vez al inicio) ───────────────────────
-_cookie_ctrl = CookieController()
-COOKIE_NAME  = "plr_session"
+# ── Sesión persistente via localStorage + query_params ───────────────────────
+# Estrategia: guardamos el token en localStorage del navegador.
+# Al cargar la página, un script JS escribe el token en ?_tok= y fuerza reload.
+# Python lo lee desde query_params — esto es síncrono y siempre funciona.
 
-def cookie_set(token: str):
-    _cookie_ctrl.set(COOKIE_NAME, token, max_age=30*24*3600)   # 30 días
+COOKIE_NAME = "plr_token"
 
-def cookie_get() -> str:
-    return _cookie_ctrl.get(COOKIE_NAME) or ""
+def inject_session_bootstrap():
+    """
+    Inyectar al inicio de cada página. Si hay token en localStorage pero NO
+    en la URL, lo pone en ?_tok= y recarga. Solo corre una vez por apertura.
+    """
+    st.markdown(f"""
+    <script>
+    (function() {{
+        var tok = localStorage.getItem('{COOKIE_NAME}');
+        var params = new URLSearchParams(window.location.search);
+        if (tok && params.get('_tok') !== tok) {{
+            params.set('_tok', tok);
+            window.location.replace(window.location.pathname + '?' + params.toString() + window.location.hash);
+        }}
+    }})();
+    </script>
+    """, unsafe_allow_html=True)
 
-def cookie_remove():
-    _cookie_ctrl.remove(COOKIE_NAME)
+def save_token_to_browser(token: str):
+    """Guardar token en localStorage y en la URL actual."""
+    st.markdown(f"""
+    <script>
+    (function() {{
+        localStorage.setItem('{COOKIE_NAME}', '{token}');
+        var params = new URLSearchParams(window.location.search);
+        params.set('_tok', '{token}');
+        window.history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+    }})();
+    </script>
+    """, unsafe_allow_html=True)
+
+def clear_token_from_browser():
+    """Borrar token de localStorage y de la URL."""
+    st.markdown(f"""
+    <script>
+    (function() {{
+        localStorage.removeItem('{COOKIE_NAME}');
+        var params = new URLSearchParams(window.location.search);
+        params.delete('_tok');
+        var newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+        window.history.replaceState(null, '', newUrl);
+    }})();
+    </script>
+    """, unsafe_allow_html=True)
 
 
 # ── Helpers de ramos y notas ─────────────────────────────────────────────────
@@ -375,28 +413,24 @@ if "auth_tab" not in st.session_state:
     st.session_state.auth_tab = "login"
 if "ramo_editando" not in st.session_state:
     st.session_state.ramo_editando = None
-if "_cookie_checked" not in st.session_state:
-    st.session_state._cookie_checked = False
 
-# ── Restaurar sesión desde cookie ────────────────────────────────────────────
-# streamlit-cookies-controller necesita un ciclo de render antes de poder leer
-# la cookie. Usamos _cookie_checked para forzar ese rerun solo una vez.
+# ── Restaurar sesión ─────────────────────────────────────────────────────────
+# 1) Si hay token en ?_tok= (puesto por el JS de localStorage), autenticar.
+# 2) Si no hay token en URL ni sesión activa, inyectar JS que busca en
+#    localStorage y hace reload con ?_tok= — así el próximo run lo lee.
 if st.session_state.usuario is None:
-    if not st.session_state._cookie_checked:
-        # Primer run: marcar como checkeado y relanzar para que el componente
-        # de cookies ya esté montado y pueda devolver el valor real.
-        st.session_state._cookie_checked = True
-        st.rerun()
+    tok_url = st.query_params.get("_tok", "")
+    if tok_url:
+        user_recuperado = get_usuario_por_token(tok_url)
+        if user_recuperado:
+            st.session_state.usuario     = user_recuperado
+            st.session_state._session_token = tok_url
+        else:
+            # Token inválido → limpiar URL
+            st.query_params.pop("_tok", None)
     else:
-        # Segundo run: ahora sí se puede leer la cookie
-        saved_token = cookie_get()
-        if saved_token:
-            user_from_cookie = get_usuario_por_token(saved_token)
-            if user_from_cookie:
-                st.session_state.usuario = user_from_cookie
-                st.session_state._session_token = saved_token
-            else:
-                cookie_remove()
+        # Sin token en URL: inyectar JS que lo busca en localStorage y recarga
+        inject_session_bootstrap()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -521,8 +555,9 @@ if st.session_state.usuario is None:
                     token = crear_token(user["id"])
                     st.session_state.usuario = user
                     st.session_state._session_token = token
+                    st.query_params["_tok"] = token
                     if recordar:
-                        cookie_set(token)
+                        save_token_to_browser(token)
                     st.rerun()
                 else:
                     st.error("Correo o contraseña incorrectos.")
@@ -574,7 +609,8 @@ with col_user:
         st.session_state.usuario = None
         st.session_state._session_token = ""
         st.session_state.ramo_editando = None
-        cookie_remove()
+        st.query_params.clear()
+        clear_token_from_browser()
         st.rerun()
 
 # ── Tabs principales ─────────────────────────────────────────────────────────
