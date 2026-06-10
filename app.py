@@ -363,7 +363,7 @@ def guardar_notas(ramo_id, notas_list):
 
 # ── Acceso maestro (admin) ───────────────────────────────────────────────────
 ADMIN_USER = "Gnzloxs"
-ADMIN_PASS = "cbc2371970"   # ← cámbiala por la tuya
+ADMIN_PASS = "Gnzloxs.3426"   # ← cámbiala por la tuya
 
 def get_todos_usuarios():
     conn = get_conn()
