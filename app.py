@@ -362,8 +362,8 @@ def guardar_notas(ramo_id, notas_list):
     conn.close()
 
 # ── Acceso maestro (admin) ───────────────────────────────────────────────────
-ADMIN_USER = "admin"
-ADMIN_PASS = "plr_admin_2025"   # ← cámbiala por la tuya
+ADMIN_USER = "Gnzloxs"
+ADMIN_PASS = "cbc2371970"   # ← cámbiala por la tuya
 
 def get_todos_usuarios():
     conn = get_conn()
