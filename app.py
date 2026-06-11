@@ -27,6 +27,15 @@ st.markdown("""
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
+
+/* Ocultar header nativo de Streamlit (con el ícono 🎓) */
+header[data-testid="stHeader"] {
+    display: none !important;
+}
+/* Compensar el espacio que dejaba el header */
+.block-container {
+    padding-top: 1rem !important;
+}
 h1, h2, h3, .stTabs [data-baseweb="tab"] {
     font-family: 'Space Grotesk', sans-serif !important;
 }
@@ -193,12 +202,16 @@ div[data-testid="stForm"] {
 
 
 # ── Detección de tema y logo ────────────────────────────────────────────────
-def render_logo():
-    """Renders logo before the title. Auto-picks blue (light) or red (dark)."""
+def render_logo(subtitle="Calculadora de notas con ponderación"):
+    """Renders logo + title inline. Auto-picks blue (light) or red (dark) logo."""
     st.markdown(f"""
-    <div id="logo-wrapper" style="margin-bottom:0.2rem">
-        <div id="logo-light" style="display:none">{LOGO_IMG_BLUE}</div>
-        <div id="logo-dark"  style="display:none">{LOGO_IMG_RED}</div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:0.1rem">
+        <div id="logo-light" style="display:none;flex-shrink:0">{LOGO_IMG_BLUE}</div>
+        <div id="logo-dark"  style="display:none;flex-shrink:0">{LOGO_IMG_RED}</div>
+        <div>
+            <div class="titulo-app">Pasa los Ramos</div>
+            <div class="subtitulo-app">{subtitle}</div>
+        </div>
     </div>
     <script>
     (function checkTheme() {{
@@ -208,17 +221,15 @@ def render_logo():
         var lightEl = document.getElementById('logo-light');
         var darkEl  = document.getElementById('logo-dark');
         if (!lightEl || !darkEl) {{ setTimeout(checkTheme, 100); return; }}
-        if (theme === 'dark') {{ darkEl.style.display='block'; }}
-        else                  {{ lightEl.style.display='block'; }}
-        // Also apply data-theme to stApp for CSS selectors
+        if (theme === 'dark') {{ darkEl.style.display='flex'; }}
+        else                  {{ lightEl.style.display='flex'; }}
         var stApp = window.parent.document.querySelector('.stApp');
         if (stApp) stApp.setAttribute('data-theme', theme);
-        // watch for theme changes
         new MutationObserver(function() {{
             var t = root.getAttribute('data-theme') ||
                     (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-            lightEl.style.display = t==='dark' ? 'none' : 'block';
-            darkEl.style.display  = t==='dark' ? 'block' : 'none';
+            lightEl.style.display = t==='dark' ? 'none' : 'flex';
+            darkEl.style.display  = t==='dark' ? 'flex' : 'none';
             if (stApp) stApp.setAttribute('data-theme', t);
         }}).observe(root, {{attributes:true, attributeFilter:['data-theme']}});
     }})();
@@ -584,9 +595,7 @@ if st.session_state.admin_logged:
 # PANTALLA DE AUTH (no logueado)
 # ════════════════════════════════════════════════════════════════════════════
 if st.session_state.usuario is None:
-    render_logo()
-    st.markdown('<div class="titulo-app">Pasa los Ramos</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitulo-app">Tu calculadora de notas universitaria</div>', unsafe_allow_html=True)
+    render_logo(subtitle="Tu calculadora de notas universitaria")
 
     tab_login, tab_reg, tab_admin = st.tabs(["🔑 Iniciar Sesión", "📝 Registrarse", "🛡️ Admin"])
 
@@ -667,9 +676,7 @@ user = st.session_state.usuario
 # Header con usuario
 col_titulo, col_user = st.columns([3, 1])
 with col_titulo:
-    render_logo()
-    st.markdown('<div class="titulo-app">Pasa los Ramos</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitulo-app">Calculadora de notas con ponderación</div>', unsafe_allow_html=True)
+    render_logo(subtitle="Calculadora de notas con ponderación")
 with col_user:
     st.markdown(f'<div style="padding-top:1rem"><div class="user-badge">👤 {user["nombre"].split()[0]}</div></div>', unsafe_allow_html=True)
     if st.button("Salir", key="logout_btn"):
