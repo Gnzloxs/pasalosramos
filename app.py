@@ -289,11 +289,7 @@ def eliminar_token(token: str):
 COOKIE_NAME = "plr_token"
 COOKIE_EXPIRY_DAYS = 30
 
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+cookie_manager = stx.CookieManager()
 
 def save_token_to_browser(token: str):
     """Guardar token en cookie con expiración de 30 días."""
